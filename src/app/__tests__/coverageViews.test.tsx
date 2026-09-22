@@ -86,6 +86,7 @@ const hosted = {
 const site = {
   slug: "blog",
   spa: true,
+  passwordProtected: false,
   stats: { objects: 3, size: 40, cachedAt: "2026-01-01T00:00:00.000Z" },
 };
 
@@ -334,7 +335,7 @@ describe("SitesView leftovers", () => {
     await waitFor(() => expect(screen.getByText("blog")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("switch", { name: strings.siteSpaLabel }));
-    await waitFor(() => expect(mockUpdateSite).toHaveBeenCalledWith("blog", false));
+    await waitFor(() => expect(mockUpdateSite).toHaveBeenCalledWith("blog", { spa: false }));
 
     fireEvent.click(screen.getAllByRole("button", { name: strings.openSite })[0]);
     expect(open).toHaveBeenCalled();
@@ -364,6 +365,82 @@ describe("SitesView leftovers", () => {
     await waitFor(() => expect(mockEnqueue).toHaveBeenCalled());
     expect(mockDeleteSite).toHaveBeenCalled();
   });
+
+  test("site password set / clear / cancel / failure", async () => {
+    mockListSites.mockResolvedValue({
+      sitesHost: "sites.example.com",
+      sites: [{ ...site, passwordProtected: false }],
+    });
+    mockUpdateSite
+      .mockResolvedValueOnce({ slug: "blog", spa: true, passwordProtected: true })
+      .mockResolvedValueOnce({ slug: "blog", spa: true, passwordProtected: true })
+      .mockResolvedValueOnce({ slug: "blog", spa: true, passwordProtected: false })
+      .mockRejectedValueOnce(new Error("pw-fail"));
+    const onNotify = vi.fn();
+    render(<SitesView onNotify={onNotify} onManageFiles={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("blog")).toBeInTheDocument());
+
+    const openManage = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: strings.sitePasswordManage }));
+      await screen.findByLabelText(strings.sitePasswordLabel);
+    };
+    // MUI keeps role=dialog in the DOM during exit animation; wait on the field instead.
+    const waitClosed = async () => {
+      await waitFor(() =>
+        expect(screen.queryByLabelText(strings.sitePasswordLabel)).not.toBeInTheDocument()
+      );
+    };
+
+    await openManage();
+    fireEvent.click(screen.getByText(strings.cancel));
+    await waitClosed();
+
+    await openManage();
+    fireEvent.change(screen.getByLabelText(strings.sitePasswordLabel), {
+      target: { value: "s3cret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: strings.sitePasswordSet }));
+    await waitFor(() =>
+      expect(mockUpdateSite).toHaveBeenCalledWith("blog", { password: "s3cret" })
+    );
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith(translate("sitePasswordSaved"), "success")
+    );
+    await waitClosed();
+    expect(screen.getByText(strings.sitePasswordProtected)).toBeInTheDocument();
+
+    // change password — covers dialog primary label when already protected
+    await openManage();
+    fireEvent.change(screen.getByLabelText(strings.sitePasswordLabel), {
+      target: { value: "n3wpass" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: strings.sitePasswordChange }));
+    await waitFor(() =>
+      expect(mockUpdateSite).toHaveBeenCalledWith("blog", { password: "n3wpass" })
+    );
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith(translate("sitePasswordSaved"), "success")
+    );
+    await waitClosed();
+
+    await openManage();
+    fireEvent.click(screen.getByRole("button", { name: strings.sitePasswordClear }));
+    await waitFor(() =>
+      expect(mockUpdateSite).toHaveBeenCalledWith("blog", { password: null })
+    );
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith(translate("sitePasswordCleared"), "success")
+    );
+    await waitClosed();
+
+    await openManage();
+    fireEvent.change(screen.getByLabelText(strings.sitePasswordLabel), {
+      target: { value: "again" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: strings.sitePasswordSet }));
+    await waitFor(() => expect(onNotify).toHaveBeenCalledWith("pw-fail", "error"));
+  });
+
 
   test("spa save failure reloads list", async () => {
     mockListSites
