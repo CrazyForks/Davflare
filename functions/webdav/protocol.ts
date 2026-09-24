@@ -316,8 +316,9 @@ function createdResponse(
   resourcePath: string,
   isCollection: boolean,
   body: BodyInit | null = "",
+  extraHeaders?: Headers,
 ): Response {
-  const headers = new Headers();
+  const headers = new Headers(extraHeaders);
   headers.set("Location", getResourceHref(resourcePath, isCollection));
   return new Response(body, {
     status: 201,
@@ -1290,8 +1291,16 @@ async function handlePut({
     }
   }
 
+  const conditionalHeaders = getConditionalHeaders(request.headers);
+  // Headers.keys() is missing from the Workers/DOM Headers typings we use.
+  const hasPreconditions =
+    conditionalHeaders.has("if-match") ||
+    conditionalHeaders.has("if-none-match") ||
+    conditionalHeaders.has("if-modified-since") ||
+    conditionalHeaders.has("if-unmodified-since") ||
+    conditionalHeaders.has("if-range");
   const result = await bucket.put(path, body, {
-    onlyIf: getConditionalHeaders(request.headers),
+    ...(hasPreconditions ? { onlyIf: conditionalHeaders } : {}),
     httpMetadata: request.headers,
     customMetadata: preservedMetadata,
   });
@@ -1306,9 +1315,15 @@ async function handlePut({
     await releaseThumbnailRef(bucket, previousThumbnail, path);
   }
 
+  // Return ETag on create/update so clients can If-Match on the next write
+  // (201 previously omitted it, leaving extension snapshotsEtag null — #112).
+  const etagHeaders = new Headers();
+  const etagValue = result.httpEtag || (result.etag ? `"${result.etag}"` : "");
+  if (etagValue) etagHeaders.set("ETag", etagValue);
+
   return existing === null
-    ? createdResponse(path, false)
-    : new Response(null, { status: 204 });
+    ? createdResponse(path, false, "", etagHeaders)
+    : new Response(null, { status: 204, headers: etagHeaders });
 }
 
 async function handleMkcol({
@@ -2326,6 +2341,8 @@ function addCorsHeaders(response: Response, request: Request): Response {
       "destination",
       "range",
       "if",
+      "if-match",
+      "if-none-match",
       "lock-token",
       "timeout",
       "fd-thumbnail",
